@@ -380,6 +380,41 @@ gd.on("plotly_click", function (ev) {
 });
 
 window.__chartReady.then(function () { updatePanel(LAST_DAY); });
+
+function selectInGroup(group, button) {
+  group.querySelectorAll("button").forEach(function (b) {
+    b.setAttribute("aria-pressed", String(b === button));
+  });
+}
+
+// The band is always built out to MAX_DAY, so changing horizon is a pure
+// relayout: no refit, no trace rebuild.
+function setHorizon(years) {
+  const r = axisRanges(years);
+  return Plotly.relayout(gd, {
+    "xaxis.range": r.x,
+    "yaxis.range": r.y,
+    annotations: emphasisAnnotations(r.maxDay),
+  });
+}
+window.__setHorizon = setHorizon;
+
+const horizonGroup = document.getElementById("horizon");
+horizonGroup.addEventListener("click", function (ev) {
+  const button = ev.target.closest("button");
+  if (!button) return;
+  selectInGroup(horizonGroup, button);
+  setHorizon(Number(button.dataset.years));
+});
+
+const densityGroup = document.getElementById("density");
+densityGroup.addEventListener("click", function (ev) {
+  const button = ev.target.closest("button");
+  if (!button) return;
+  selectInGroup(densityGroup, button);
+  state.step = Number(button.dataset.step);
+  updatePanel(state.days === null ? LAST_DAY : state.days);
+});
 </script>
 </body>
 </html>

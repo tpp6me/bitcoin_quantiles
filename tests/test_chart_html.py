@@ -76,3 +76,18 @@ def test_template_exposes_the_panel_hooks():
     assert "plotly_hover" in text
     assert "plotly_click" in text
 
+
+def test_template_exposes_the_horizon_control():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert "window.__setHorizon" in text
+    assert "Plotly.relayout" in text
+
+
+def test_template_offers_four_horizons_and_three_densities():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    for years in ("0", "2", "5", "10"):
+        assert f'data-years="{years}"' in text
+    for step in ("1", "5", "10"):
+        assert f'data-step="{step}"' in text
+
+
