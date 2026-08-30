@@ -8,6 +8,7 @@ static HTML file. See docs/superpowers/specs/2026-08-30-interactive-quantile-cha
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,3 +174,17 @@ def build_payload(
         "closest_q": [round(float(q), 2) for q in closest],
         "crossings_in_range": len(crossings) > 0,
     }
+
+
+def render(payload: dict, template_path: Path, out_path: Path) -> None:
+    """Substitute the payload into the template and write the standalone HTML."""
+    template = Path(template_path).read_text(encoding="utf-8")
+    if TEMPLATE_MARKER not in template:
+        raise ValueError(f"template {template_path} is missing marker {TEMPLATE_MARKER}")
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        template.replace(TEMPLATE_MARKER, json.dumps(payload, separators=(",", ":"))),
+        encoding="utf-8",
+    )

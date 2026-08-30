@@ -1,0 +1,56 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from build_chart import TEMPLATE_MARKER, render
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TEMPLATE = REPO_ROOT / "chart_template.html"
+PLOTLY_CDN = "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"
+
+
+def test_template_exists_and_carries_the_marker():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert TEMPLATE_MARKER in text
+    assert text.count(TEMPLATE_MARKER) == 1
+
+
+def test_template_pins_plotly_and_references_nothing_else_remote():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert PLOTLY_CDN in text
+    remote = [
+        line
+        for line in text.splitlines()
+        if ("http://" in line or "https://" in line) and PLOTLY_CDN not in line
+    ]
+    assert remote == [], f"unexpected remote references: {remote}"
+
+
+def test_render_substitutes_the_payload(tmp_path):
+    payload = {"hello": "world", "n": 1}
+    out = tmp_path / "out" / "index.html"
+
+    render(payload, TEMPLATE, out)
+
+    text = out.read_text(encoding="utf-8")
+    assert TEMPLATE_MARKER not in text
+    assert json.dumps(payload, separators=(",", ":")) in text
+
+
+def test_render_rejects_a_template_without_the_marker(tmp_path):
+    bad = tmp_path / "bad.html"
+    bad.write_text("<html></html>", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="marker"):
+        render({}, bad, tmp_path / "out.html")
+
+
+def test_rendered_output_has_no_local_file_references(tmp_path):
+    out = tmp_path / "index.html"
+    render({"quantiles": []}, TEMPLATE, out)
+    text = out.read_text(encoding="utf-8")
+
+    assert 'src="./' not in text
+    assert 'href="./' not in text
+    assert 'src="/' not in text
