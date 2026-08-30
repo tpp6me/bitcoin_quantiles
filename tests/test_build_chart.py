@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from build_chart import GENESIS_DATE, QUANTILES, to_daily
+from build_chart import GENESIS_DATE, QUANTILES, to_daily, fit_quantiles
 
 
 def test_quantiles_are_ninety_nine_two_decimal_values():
@@ -89,3 +89,46 @@ def test_to_daily_uses_chronological_open_and_close_when_rows_are_unordered():
     assert daily.loc[0, "Open"] == 10.0
     # Close should be from the latest time (23:59), not the last row (00:00)
     assert daily.loc[0, "Close"] == 22.0
+
+
+def _synthetic_daily(intercept=2.0, slope=1.5, sigma=0.2, seed=0):
+    days = np.arange(500, 5000)
+    rng = np.random.default_rng(seed)
+    log_close = intercept + slope * np.log(days) + rng.normal(0.0, sigma, len(days))
+    return pd.DataFrame(
+        {
+            "DaysSinceGenesis": days,
+            "log_days_since_genesis": np.log(days),
+            "log_Close": log_close,
+            "Close": np.exp(log_close),
+        }
+    )
+
+
+def test_fit_quantiles_returns_one_pair_per_quantile():
+    coef = fit_quantiles(_synthetic_daily())
+    assert coef.shape == (99, 2)
+    assert np.isfinite(coef).all()
+
+
+def test_fit_quantiles_recovers_the_median_line():
+    coef = fit_quantiles(_synthetic_daily(intercept=2.0, slope=1.5, sigma=0.2))
+    median_row = 49  # QUANTILES[49] == 0.50
+
+    assert coef[median_row, 1] == pytest.approx(1.5, abs=0.05)
+
+    at_2000 = coef[median_row, 0] + coef[median_row, 1] * np.log(2000)
+    assert at_2000 == pytest.approx(2.0 + 1.5 * np.log(2000), abs=0.03)
+
+
+def test_fit_quantiles_spreads_by_the_noise_distribution():
+    sigma = 0.2
+    coef = fit_quantiles(_synthetic_daily(sigma=sigma))
+    log_2000 = np.log(2000)
+
+    def predict(row):
+        return coef[row, 0] + coef[row, 1] * log_2000
+
+    # q0.90 sits about 1.2816 standard deviations above the median.
+    assert predict(89) - predict(49) == pytest.approx(1.2816 * sigma, abs=0.05)
+    assert predict(49) - predict(9) == pytest.approx(1.2816 * sigma, abs=0.05)

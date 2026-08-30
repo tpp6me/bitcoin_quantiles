@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 
 # The notebook uses 2010-01-03 for DaysSinceGenesis (cell 14), while its halving
 # list uses 2009-01-09 and bitcoin_quantile_fixes.py uses 2009-01-03. We keep the
@@ -68,3 +69,28 @@ def to_daily(minute_df: pd.DataFrame) -> pd.DataFrame:
     daily["log_days_since_genesis"] = np.log(daily["DaysSinceGenesis"])
     daily.attrs["dropped"] = before - len(daily)
     return daily
+
+
+def fit_quantiles(daily: pd.DataFrame) -> np.ndarray:
+    """Fit log_Close ~ log_days_since_genesis at each of the 99 quantiles.
+
+    Returns an array of shape (99, 2): column 0 intercept, column 1 slope.
+    """
+    y = daily["log_Close"]
+    x = sm.add_constant(daily["log_days_since_genesis"])
+
+    coef = np.empty((len(QUANTILES), 2), dtype=float)
+    for i, q in enumerate(QUANTILES):
+        try:
+            result = sm.QuantReg(y, x).fit(q=float(q))
+        except Exception as exc:
+            raise RuntimeError(
+                f"QuantReg failed at q={q:.2f}; refusing to emit a partial band"
+            ) from exc
+        coef[i, 0] = result.params["const"]
+        coef[i, 1] = result.params["log_days_since_genesis"]
+
+    if not np.isfinite(coef).all():
+        bad = QUANTILES[~np.isfinite(coef).all(axis=1)]
+        raise RuntimeError(f"non-finite coefficients at quantiles {bad.tolist()}")
+    return coef
