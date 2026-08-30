@@ -208,3 +208,79 @@ def test_closest_quantile_returns_one_value_per_row():
 
     assert len(result) == len(daily)
     assert set(result).issubset(set(QUANTILES.tolist()))
+
+
+import json
+
+from build_chart import build_payload
+
+
+def _payload_fixture():
+    daily = _synthetic_daily()
+    daily["Date"] = pd.date_range("2011-05-17", periods=len(daily), freq="D")
+    coef = fit_quantiles(daily)
+    closest = closest_quantile(daily, coef, QUANTILES)
+    crossings = check_crossings(coef, QUANTILES, projection_days(daily))
+    return build_payload(daily, coef, QUANTILES, closest, crossings), daily
+
+
+def test_build_payload_has_the_expected_keys():
+    payload, _ = _payload_fixture()
+
+    assert set(payload) == {
+        "generated_at",
+        "genesis",
+        "last_date",
+        "last_close",
+        "projection_years",
+        "quantiles",
+        "coef",
+        "days",
+        "close",
+        "closest_q",
+        "crossings_in_range",
+    }
+
+
+def test_build_payload_carries_ninety_nine_quantiles_and_coefficients():
+    payload, _ = _payload_fixture()
+
+    assert len(payload["quantiles"]) == 99
+    assert len(payload["coef"]) == 99
+    assert all(len(pair) == 2 for pair in payload["coef"])
+    assert payload["genesis"] == "2010-01-03"
+    assert payload["projection_years"] == 10
+
+
+def test_build_payload_series_arrays_are_parallel_and_clean():
+    payload, daily = _payload_fixture()
+
+    n = len(daily)
+    assert len(payload["days"]) == n
+    assert len(payload["close"]) == n
+    assert len(payload["closest_q"]) == n
+    assert all(isinstance(d, int) for d in payload["days"])
+    assert payload["last_close"] == pytest.approx(round(float(daily["Close"].iloc[-1]), 2))
+
+
+def test_build_payload_is_json_serialisable_and_finite():
+    payload, _ = _payload_fixture()
+    text = json.dumps(payload)
+    reloaded = json.loads(text)
+
+    assert "NaN" not in text
+    assert "Infinity" not in text
+    assert np.isfinite(np.array(reloaded["coef"])).all()
+    assert np.isfinite(np.array(reloaded["close"])).all()
+
+
+def test_build_payload_flags_crossings():
+    daily = _synthetic_daily()
+    daily["Date"] = pd.date_range("2011-05-17", periods=len(daily), freq="D")
+    coef = fit_quantiles(daily)
+    closest = closest_quantile(daily, coef, QUANTILES)
+    fake = [Crossing(lower_q=0.90, upper_q=0.91, first_day=9000)]
+
+    payload = build_payload(daily, coef, QUANTILES, closest, fake)
+
+    assert payload["crossings_in_range"] is True

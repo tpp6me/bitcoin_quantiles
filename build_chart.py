@@ -9,6 +9,7 @@ static HTML file. See docs/superpowers/specs/2026-08-30-interactive-quantile-cha
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -149,3 +150,26 @@ def closest_quantile(
     preds = predict_log_prices(coef, daily["DaysSinceGenesis"].to_numpy())
     actual = daily["log_Close"].to_numpy()[:, None]
     return quantiles[np.abs(preds - actual).argmin(axis=1)]
+
+
+def build_payload(
+    daily: pd.DataFrame,
+    coef: np.ndarray,
+    quantiles: np.ndarray,
+    closest: np.ndarray,
+    crossings: list[Crossing],
+) -> dict:
+    """The complete data the browser needs, ready for json.dumps."""
+    return {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "genesis": GENESIS_DATE.strftime("%Y-%m-%d"),
+        "last_date": pd.Timestamp(daily["Date"].iloc[-1]).strftime("%Y-%m-%d"),
+        "last_close": round(float(daily["Close"].iloc[-1]), 2),
+        "projection_years": PROJECTION_YEARS,
+        "quantiles": [round(float(q), 2) for q in quantiles],
+        "coef": [[float(a), float(b)] for a, b in coef],
+        "days": [int(d) for d in daily["DaysSinceGenesis"]],
+        "close": [round(float(c), 2) for c in daily["Close"]],
+        "closest_q": [round(float(q), 2) for q in closest],
+        "crossings_in_range": len(crossings) > 0,
+    }
