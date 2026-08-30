@@ -7,7 +7,8 @@ from build_chart import TEMPLATE_MARKER, render
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = REPO_ROOT / "chart_template.html"
-PLOTLY_CDN = "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"
+PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
+
 
 
 def test_template_exists_and_carries_the_marker():
