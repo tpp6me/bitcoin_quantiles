@@ -67,3 +67,12 @@ def test_template_builds_all_ninety_eight_bands():
     assert "tonexty" in text
     assert "Plotly.newPlot" in text
     assert "EMPHASIS" in text
+
+
+def test_template_exposes_the_panel_hooks():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert "window.__updatePanel" in text
+    assert "window.__panelState" in text
+    assert "plotly_hover" in text
+    assert "plotly_click" in text
+

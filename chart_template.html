@@ -286,6 +286,100 @@ document.getElementById("meta").textContent =
   " · genesis " + P.genesis + " · built " + P.generated_at.slice(0, 10);
 
 window.__chartReady = Plotly.newPlot(gd, buildTraces(), layout, config);
+
+const panelDate = document.getElementById("panel-date");
+const panelSub = document.getElementById("panel-sub");
+const panelActual = document.getElementById("panel-actual");
+const panelRows = document.getElementById("panel-rows");
+
+const state = { days: null, pinned: false, step: 5 };
+window.__panelState = state;
+
+// P.days is ascending; return the nearest index for any day within [FIRST_DAY, LAST_DAY],
+// or -1 when day > LAST_DAY (i.e. we are in the projection).
+function dayIndex(day) {
+  if (day > LAST_DAY) return -1;
+  if (day <= FIRST_DAY) return 0;
+  let lo = 0, hi = P.days.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (P.days[mid] === day) return mid;
+    if (P.days[mid] < day) lo = mid + 1; else hi = mid - 1;
+  }
+  if (lo >= P.days.length) return P.days.length - 1;
+  if (hi < 0) return 0;
+  return (day - P.days[hi] < P.days[lo] - day) ? hi : lo;
+}
+
+function displayedRows() {
+  const rows = [];
+  for (let i = NQ - 1; i >= 0; i -= state.step) rows.push(i);
+  return rows;
+}
+
+function updatePanel(rawDays) {
+  const day = Math.max(1, Math.round(rawDays));
+  state.days = day;
+
+  const prices = quantilePricesAt(day);
+  const idx = dayIndex(day);
+  const hasActual = idx !== -1;
+
+  panelDate.textContent = fmtDate(day);
+  panelSub.textContent = hasActual
+    ? "Day " + day + " since genesis"
+    : "Projected · day " + day + " since genesis";
+
+  if (hasActual) {
+    const close = P.close[idx];
+    panelActual.hidden = false;
+    panelActual.innerHTML =
+      '<div class="price">' + fmtPrice(close) + "</div>" +
+      '<div class="q">actual close · sits at q' + P.closest_q[idx].toFixed(2) + "</div>";
+  } else {
+    panelActual.hidden = true;
+  }
+
+  const actual = hasActual ? P.close[idx] : null;
+  const rows = displayedRows();
+
+  // Highlight the displayed pair that brackets the actual price.
+  let upperBracket = -1;
+  if (actual !== null) {
+    for (let k = 0; k < rows.length; k++) {
+      if (prices[rows[k]] >= actual) upperBracket = k;
+    }
+  }
+
+  panelRows.innerHTML = rows
+    .map(function (i, k) {
+      const bracket =
+        upperBracket !== -1 && (k === upperBracket || k === upperBracket + 1);
+      return (
+        '<tr class="' + (bracket ? "bracket" : "") + '">' +
+        '<td class="q">q' + P.quantiles[i].toFixed(2) + "</td>" +
+        '<td class="p">' + fmtPrice(prices[i]) + "</td>" +
+        "</tr>"
+      );
+    })
+    .join("");
+}
+window.__updatePanel = updatePanel;
+
+gd.on("plotly_hover", function (ev) {
+  if (state.pinned) return;
+  const pt = ev.points[ev.points.length - 1];
+  if (pt) updatePanel(pt.x);
+});
+
+gd.on("plotly_click", function (ev) {
+  state.pinned = !state.pinned;
+  panelSub.style.color = state.pinned ? "var(--accent)" : "";
+  const pt = ev.points[ev.points.length - 1];
+  if (state.pinned && pt) updatePanel(pt.x);
+});
+
+window.__chartReady.then(function () { updatePanel(LAST_DAY); });
 </script>
 </body>
 </html>
