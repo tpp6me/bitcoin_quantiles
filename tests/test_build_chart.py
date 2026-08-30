@@ -176,3 +176,35 @@ def test_projection_days_spans_data_start_to_the_horizon():
     assert days[0] == pytest.approx(1000.0)
     assert days[-1] == pytest.approx(2000 + round(10 * 365.25))
     assert np.all(np.diff(days) > 0)
+
+
+from build_chart import closest_quantile
+
+
+def test_closest_quantile_picks_the_line_the_point_sits_on():
+    # Three parallel lines, one unit apart, tagged 0.25 / 0.50 / 0.75.
+    coef = np.array([[0.0, 1.0], [1.0, 1.0], [2.0, 1.0]])
+    quantiles = np.array([0.25, 0.50, 0.75])
+    days = np.array([100.0, 100.0, 100.0])
+    log_days = np.log(days)
+
+    daily = pd.DataFrame(
+        {
+            "DaysSinceGenesis": days,
+            # exactly on the 0.25 line, the 0.50 line, and the 0.75 line
+            "log_Close": [log_days[0], 1.0 + log_days[1], 2.0 + log_days[2]],
+        }
+    )
+
+    result = closest_quantile(daily, coef, quantiles)
+
+    assert result.tolist() == [0.25, 0.50, 0.75]
+
+
+def test_closest_quantile_returns_one_value_per_row():
+    daily = _synthetic_daily()
+    coef = fit_quantiles(daily)
+    result = closest_quantile(daily, coef, QUANTILES)
+
+    assert len(result) == len(daily)
+    assert set(result).issubset(set(QUANTILES.tolist()))

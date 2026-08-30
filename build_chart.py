@@ -140,3 +140,12 @@ def check_crossings(
             )
         )
     return crossings
+
+
+def closest_quantile(
+    daily: pd.DataFrame, coef: np.ndarray, quantiles: np.ndarray
+) -> np.ndarray:
+    """The quantile whose fitted line each day's actual close sits nearest to."""
+    preds = predict_log_prices(coef, daily["DaysSinceGenesis"].to_numpy())
+    actual = daily["log_Close"].to_numpy()[:, None]
+    return quantiles[np.abs(preds - actual).argmin(axis=1)]
