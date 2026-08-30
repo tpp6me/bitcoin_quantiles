@@ -49,6 +49,7 @@ def to_daily(minute_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate minute-level OHLCV to daily and add the power-law columns."""
     df = minute_df.copy()
     df["Date"] = pd.to_datetime(df["Timestamp"], unit="s").dt.floor("D")
+    df = df.sort_values("Timestamp")
 
     daily = df.groupby("Date", as_index=False).agg(
         Open=("Open", "first"),

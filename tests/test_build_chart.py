@@ -71,3 +71,21 @@ def test_to_daily_drops_nonpositive_prices_and_records_the_count():
     assert len(daily) == 1
     assert daily.loc[0, "Close"] == 10.0
     assert daily.attrs["dropped"] == 1
+
+
+def test_to_daily_uses_chronological_open_and_close_when_rows_are_unordered():
+    # Deliberately shuffle rows for a single day so chronologically-first row is not first in frame
+    minute_df = _minute_frame(
+        [
+            ("2015-01-01 23:59", 20.0, 25.0, 19.0, 22.0, 2.0),
+            ("2015-01-01 12:00", 15.0, 17.0, 14.0, 16.0, 1.5),
+            ("2015-01-01 00:00", 10.0, 11.0, 9.0, 10.5, 1.0),
+        ]
+    )
+    daily = to_daily(minute_df)
+
+    assert len(daily) == 1
+    # Open should be from the earliest time (00:00), not the first row (23:59)
+    assert daily.loc[0, "Open"] == 10.0
+    # Close should be from the latest time (23:59), not the last row (00:00)
+    assert daily.loc[0, "Close"] == 22.0
