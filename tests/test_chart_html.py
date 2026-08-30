@@ -54,3 +54,16 @@ def test_rendered_output_has_no_local_file_references(tmp_path):
     assert 'src="./' not in text
     assert 'href="./' not in text
     assert 'src="/' not in text
+
+
+def test_template_exposes_the_browser_hooks_task_ten_verifies():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    for hook in ("__quantilePricesAt", "__chartReady"):
+        assert f"window.{hook}" in text, f"missing browser hook {hook}"
+
+
+def test_template_builds_all_ninety_eight_bands():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert "tonexty" in text
+    assert "Plotly.newPlot" in text
+    assert "EMPHASIS" in text

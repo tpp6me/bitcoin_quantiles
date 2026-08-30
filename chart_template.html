@@ -99,6 +99,193 @@
 </main>
 <script>
 const PAYLOAD = /*__PAYLOAD__*/;
+
+const P = PAYLOAD;
+const NQ = P.quantiles.length;
+const DAY_MS = 86400000;
+const GENESIS_MS = Date.parse(P.genesis + "T00:00:00Z");
+const EMPHASIS = [0.01, 0.05, 0.10, 0.25, 0.40, 0.50, 0.60, 0.75, 0.90, 0.95, 0.99];
+
+const FIRST_DAY = P.days[0];
+const LAST_DAY = P.days[P.days.length - 1];
+const MAX_DAY = LAST_DAY + Math.round(P.projection_years * 365.25);
+
+const gd = document.getElementById("chart");
+
+function daysToDate(d) { return new Date(GENESIS_MS + d * DAY_MS); }
+function fmtDate(d) { return daysToDate(d).toISOString().slice(0, 10); }
+
+function fmtPrice(v) {
+  if (v >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+  if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "k";
+  if (v >= 1) return "$" + v.toFixed(2);
+  return "$" + v.toPrecision(3);
+}
+
+// The whole model: 99 closed-form lines, rearranged (sorted) at evaluation time
+// so a higher quantile can never report a lower price. See the spec's
+// "Quantile crossing" section.
+function quantilePricesAt(days) {
+  const ld = Math.log(days);
+  const out = new Array(NQ);
+  for (let i = 0; i < NQ; i++) out[i] = Math.exp(P.coef[i][0] + P.coef[i][1] * ld);
+  out.sort((a, b) => a - b);
+  return out;
+}
+window.__quantilePricesAt = quantilePricesAt;
+
+function qIndex(q) {
+  let best = 0, bestDiff = Infinity;
+  for (let i = 0; i < NQ; i++) {
+    const d = Math.abs(P.quantiles[i] - q);
+    if (d < bestDiff) { bestDiff = d; best = i; }
+  }
+  return best;
+}
+
+function logspace(a, b, n) {
+  const la = Math.log(a), lb = Math.log(b), out = new Array(n);
+  for (let k = 0; k < n; k++) out[k] = Math.exp(la + (lb - la) * k / (n - 1));
+  return out;
+}
+
+// Straight lines in log-log space need only their endpoints. When the fit has
+// crossings inside the range, sorting makes each band piecewise, so sample it.
+const BAND_X = P.crossings_in_range
+  ? logspace(FIRST_DAY, MAX_DAY, 200)
+  : [FIRST_DAY, MAX_DAY];
+
+const BAND_Y = (function () {
+  const series = Array.from({ length: NQ }, () => new Array(BAND_X.length));
+  BAND_X.forEach((d, k) => {
+    const prices = quantilePricesAt(d);
+    for (let i = 0; i < NQ; i++) series[i][k] = prices[i];
+  });
+  return series;
+})();
+
+function bandColor(t) {
+  return "hsla(" + Math.round(212 - 212 * t) + ", 72%, 54%, 0.5)";
+}
+
+function yearTicks() {
+  const vals = [], text = [];
+  const first = daysToDate(FIRST_DAY).getUTCFullYear();
+  const last = daysToDate(MAX_DAY).getUTCFullYear();
+  let lastKept = -Infinity;
+  for (let y = first; y <= last; y++) {
+    const d = (Date.UTC(y, 0, 1) - GENESIS_MS) / DAY_MS;
+    if (d <= FIRST_DAY || d > MAX_DAY) continue;
+    const l = Math.log10(d);
+    // Drop labels that would collide on a log axis.
+    if (l - lastKept < 0.045 && y !== last) continue;
+    lastKept = l;
+    vals.push(d);
+    text.push(String(y));
+  }
+  return { vals, text };
+}
+
+function buildTraces() {
+  const traces = [];
+
+  for (let i = 0; i < NQ; i++) {
+    traces.push({
+      x: BAND_X, y: BAND_Y[i], type: "scatter", mode: "lines",
+      line: { width: 0 }, hoverinfo: "skip", showlegend: false,
+      fill: i === 0 ? "none" : "tonexty",
+      fillcolor: bandColor(i / (NQ - 1)),
+    });
+  }
+
+  EMPHASIS.forEach(function (q) {
+    const i = qIndex(q);
+    traces.push({
+      x: BAND_X, y: BAND_Y[i], type: "scatter", mode: "lines",
+      line: {
+        width: q === 0.5 ? 1.8 : 1.1,
+        color: q === 0.5 ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.55)",
+        dash: q === 0.5 ? "solid" : "dot",
+      },
+      hoverinfo: "skip", showlegend: false,
+    });
+  });
+
+  traces.push({
+    x: P.days, y: P.close, type: "scatter", mode: "lines",
+    line: { width: 1.1, color: "#0b0d11" },
+    hoverinfo: "skip", showlegend: false,
+  });
+
+  // Invisible dense grid so plotly_hover fires anywhere, projection included.
+  const hoverX = logspace(FIRST_DAY, MAX_DAY, 800);
+  const medianRow = qIndex(0.5);
+  traces.push({
+    x: hoverX,
+    y: hoverX.map(function (d) { return quantilePricesAt(d)[medianRow]; }),
+    type: "scatter", mode: "markers",
+    marker: { opacity: 0, size: 1 },
+    hoverinfo: "none", showlegend: false, name: "hovercatch",
+  });
+
+  return traces;
+}
+
+function emphasisAnnotations(maxDay) {
+  return EMPHASIS.map(function (q) {
+    const i = qIndex(q);
+    return {
+      x: Math.log10(maxDay), y: Math.log10(quantilePricesAt(maxDay)[i]),
+      xref: "x", yref: "y", text: "q" + q.toFixed(2),
+      xanchor: "left", xshift: 4, showarrow: false,
+      font: { size: 10, color: "rgba(255,255,255,.65)" },
+    };
+  });
+}
+
+function axisRanges(years) {
+  const d1 = years === 0 ? LAST_DAY : LAST_DAY + Math.round(years * 365.25);
+  const lo = quantilePricesAt(FIRST_DAY)[0] * 0.5;
+  const hi = quantilePricesAt(d1)[NQ - 1] * 1.6;
+  return {
+    x: [Math.log10(FIRST_DAY), Math.log10(d1)],
+    y: [Math.log10(lo), Math.log10(hi)],
+    maxDay: d1,
+  };
+}
+
+const ticks = yearTicks();
+const initial = axisRanges(5);
+
+const layout = {
+  paper_bgcolor: "#0e1116", plot_bgcolor: "#0e1116",
+  font: { color: "#c9d1d9", family: "ui-sans-serif, system-ui, sans-serif", size: 11 },
+  margin: { l: 60, r: 58, t: 12, b: 40 },
+  hovermode: "x",
+  showlegend: false,
+  annotations: emphasisAnnotations(initial.maxDay),
+  xaxis: {
+    type: "log", range: initial.x,
+    tickvals: ticks.vals, ticktext: ticks.text,
+    gridcolor: "rgba(255,255,255,.06)", zeroline: false,
+    showspikes: true, spikemode: "across", spikethickness: 1,
+    spikecolor: "rgba(245,179,1,.8)", spikedash: "solid", spikesnap: "cursor",
+  },
+  yaxis: {
+    type: "log", range: initial.y,
+    tickformat: "$,.3~s",
+    gridcolor: "rgba(255,255,255,.06)", zeroline: false,
+  },
+};
+
+const config = { displayModeBar: false, responsive: true, scrollZoom: false };
+
+document.getElementById("meta").textContent =
+  "Fitted " + NQ + " quantile regressions on daily closes through " + P.last_date +
+  " · genesis " + P.genesis + " · built " + P.generated_at.slice(0, 10);
+
+window.__chartReady = Plotly.newPlot(gd, buildTraces(), layout, config);
 </script>
 </body>
 </html>
