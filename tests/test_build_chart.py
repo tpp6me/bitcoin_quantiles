@@ -139,12 +139,13 @@ from build_chart import Crossing, check_crossings, predict_log_prices, projectio
 
 def test_predict_log_prices_shape_and_values():
     coef = np.array([[0.0, 1.0], [1.0, 2.0]])
-    days = np.array([10.0, 100.0])
+    days = np.array([10.0, 100.0, 1000.0])
     preds = predict_log_prices(coef, days)
 
-    assert preds.shape == (2, 2)
+    assert preds.shape == (3, 2)
     assert preds[0, 0] == pytest.approx(np.log(10.0))
     assert preds[1, 1] == pytest.approx(1.0 + 2.0 * np.log(100.0))
+    assert preds[1, 0] == pytest.approx(np.log(100.0))
 
 
 def test_check_crossings_finds_an_inversion():
