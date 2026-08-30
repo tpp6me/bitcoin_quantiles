@@ -8,7 +8,9 @@ static HTML file. See docs/superpowers/specs/2026-08-30-interactive-quantile-cha
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -188,3 +190,59 @@ def render(payload: dict, template_path: Path, out_path: Path) -> None:
         template.replace(TEMPLATE_MARKER, json.dumps(payload, separators=(",", ":"))),
         encoding="utf-8",
     )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=None,
+        help="minute-level CSV to use instead of downloading from Kaggle",
+    )
+    parser.add_argument(
+        "--template", type=Path, default=Path(__file__).parent / "chart_template.html"
+    )
+    parser.add_argument(
+        "--out", type=Path, default=Path(__file__).parent / "docs" / "index.html"
+    )
+    args = parser.parse_args(argv)
+
+    csv_path = args.csv if args.csv is not None else download_minute_csv()
+    print(f"Reading {csv_path}")
+    daily = to_daily(pd.read_csv(csv_path))
+    print(
+        f"{len(daily):,} daily rows from {daily['Date'].iloc[0]:%Y-%m-%d} "
+        f"to {daily['Date'].iloc[-1]:%Y-%m-%d} ({daily.attrs['dropped']} dropped)"
+    )
+
+    print(f"Fitting {len(QUANTILES)} quantile regressions...")
+    coef = fit_quantiles(daily)
+
+    median = sm.QuantReg(
+        daily["log_Close"], sm.add_constant(daily["log_days_since_genesis"])
+    ).fit(q=0.5)
+    print(f"Median-quantile pseudo R-squared: {median.prsquared:.4f}")
+
+    days_grid = projection_days(daily)
+    crossings = check_crossings(coef, QUANTILES, days_grid)
+    if crossings:
+        print(f"WARNING: {len(crossings)} adjacent quantile pair(s) cross in range:")
+        for c in crossings[:10]:
+            date = GENESIS_DATE + pd.Timedelta(days=c.first_day)
+            print(f"  q{c.lower_q:.2f}/q{c.upper_q:.2f} from {date:%Y-%m-%d}")
+        print("  The chart sorts quantile values at evaluation time to compensate.")
+
+    closest = closest_quantile(daily, coef, QUANTILES)
+    payload = build_payload(daily, coef, QUANTILES, closest, crossings)
+    render(payload, args.template, args.out)
+
+    size_kb = args.out.stat().st_size / 1024
+    print(f"Wrote {args.out} ({size_kb:,.0f} KB)")
+    print(f"Latest close {payload['last_close']:,.2f} at q{payload['closest_q'][-1]:.2f}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
