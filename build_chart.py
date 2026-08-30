@@ -8,6 +8,7 @@ static HTML file. See docs/superpowers/specs/2026-08-30-interactive-quantile-cha
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -94,3 +95,48 @@ def fit_quantiles(daily: pd.DataFrame) -> np.ndarray:
         bad = QUANTILES[~np.isfinite(coef).all(axis=1)]
         raise RuntimeError(f"non-finite coefficients at quantiles {bad.tolist()}")
     return coef
+
+
+@dataclass(frozen=True)
+class Crossing:
+    """An adjacent quantile pair whose fitted lines invert somewhere in range."""
+
+    lower_q: float
+    upper_q: float
+    first_day: int
+
+
+def predict_log_prices(coef: np.ndarray, days) -> np.ndarray:
+    """Predicted log price for every quantile at every day.
+
+    Returns shape (len(days), n_quantiles).
+    """
+    log_days = np.log(np.asarray(days, dtype=float))
+    return coef[:, 0][None, :] + coef[:, 1][None, :] * log_days[:, None]
+
+
+def projection_days(daily: pd.DataFrame, years: int = PROJECTION_YEARS) -> np.ndarray:
+    """A log-spaced grid of day values from the first data day to the horizon."""
+    first = float(daily["DaysSinceGenesis"].iloc[0])
+    last = float(daily["DaysSinceGenesis"].iloc[-1]) + round(years * 365.25)
+    return np.exp(np.linspace(np.log(first), np.log(last), 2000))
+
+
+def check_crossings(
+    coef: np.ndarray, quantiles: np.ndarray, days: np.ndarray
+) -> list[Crossing]:
+    """Find adjacent quantile pairs that invert anywhere in the given day range."""
+    preds = predict_log_prices(coef, days)
+    inverted = np.diff(preds, axis=1) < 0
+
+    crossings = []
+    for j in np.flatnonzero(inverted.any(axis=0)):
+        first_day = int(days[int(np.argmax(inverted[:, j]))])
+        crossings.append(
+            Crossing(
+                lower_q=float(quantiles[j]),
+                upper_q=float(quantiles[j + 1]),
+                first_day=first_day,
+            )
+        )
+    return crossings

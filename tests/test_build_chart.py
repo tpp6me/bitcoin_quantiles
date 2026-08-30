@@ -132,3 +132,46 @@ def test_fit_quantiles_spreads_by_the_noise_distribution():
     # q0.90 sits about 1.2816 standard deviations above the median.
     assert predict(89) - predict(49) == pytest.approx(1.2816 * sigma, abs=0.05)
     assert predict(49) - predict(9) == pytest.approx(1.2816 * sigma, abs=0.05)
+
+
+from build_chart import Crossing, check_crossings, predict_log_prices, projection_days
+
+
+def test_predict_log_prices_shape_and_values():
+    coef = np.array([[0.0, 1.0], [1.0, 2.0]])
+    days = np.array([10.0, 100.0])
+    preds = predict_log_prices(coef, days)
+
+    assert preds.shape == (2, 2)
+    assert preds[0, 0] == pytest.approx(np.log(10.0))
+    assert preds[1, 1] == pytest.approx(1.0 + 2.0 * np.log(100.0))
+
+
+def test_check_crossings_finds_an_inversion():
+    # Lines cross where ln(d) == 2, i.e. d ~= 7.39.
+    coef = np.array([[0.0, 1.0], [1.0, 0.5]])
+    quantiles = np.array([0.50, 0.60])
+    days = np.arange(2, 101)
+
+    crossings = check_crossings(coef, quantiles, days)
+
+    assert len(crossings) == 1
+    assert crossings[0] == Crossing(lower_q=0.50, upper_q=0.60, first_day=8)
+
+
+def test_check_crossings_returns_empty_for_parallel_lines():
+    coef = np.array([[0.0, 1.0], [1.0, 1.0]])
+    quantiles = np.array([0.50, 0.60])
+    days = np.arange(2, 10001)
+
+    assert check_crossings(coef, quantiles, days) == []
+
+
+def test_projection_days_spans_data_start_to_the_horizon():
+    daily = pd.DataFrame({"DaysSinceGenesis": np.arange(1000, 2001)})
+    days = projection_days(daily, years=10)
+
+    assert len(days) == 2000
+    assert days[0] == pytest.approx(1000.0)
+    assert days[-1] == pytest.approx(2000 + round(10 * 365.25))
+    assert np.all(np.diff(days) > 0)
