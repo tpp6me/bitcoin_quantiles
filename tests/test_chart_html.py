@@ -92,6 +92,14 @@ def test_template_offers_four_horizons_and_three_densities():
         assert f'data-step="{step}"' in text
 
 
+def test_template_configures_axis_spikes():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert "showspikes: true" in text
+    # Verify both xaxis and yaxis enable spikes
+    assert text.count("showspikes: true") >= 2
+
+
+
 def _extract_payload(html_text: str) -> dict:
     """Pull the PAYLOAD object out of a rendered chart's inline <script>.
 
