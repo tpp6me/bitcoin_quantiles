@@ -69,8 +69,8 @@
   </div>
   <div class="controls">
     <div class="control">
-      <label for="horizon">Horizon</label>
-      <div class="seg" id="horizon">
+      <label id="horizon-label">Horizon</label>
+      <div class="seg" id="horizon" role="group" aria-labelledby="horizon-label">
         <button data-years="0" aria-pressed="false">Today</button>
         <button data-years="2" aria-pressed="false">+2y</button>
         <button data-years="5" aria-pressed="true">+5y</button>
@@ -78,8 +78,8 @@
       </div>
     </div>
     <div class="control">
-      <label for="density">Readout</label>
-      <div class="seg" id="density">
+      <label id="density-label">Readout</label>
+      <div class="seg" id="density" role="group" aria-labelledby="density-label">
         <button data-step="10" aria-pressed="false">11</button>
         <button data-step="5" aria-pressed="true">21</button>
         <button data-step="1" aria-pressed="false">All 99</button>
@@ -109,6 +109,11 @@ const EMPHASIS = [0.01, 0.05, 0.10, 0.25, 0.40, 0.50, 0.60, 0.75, 0.90, 0.95, 0.
 const FIRST_DAY = P.days[0];
 const LAST_DAY = P.days[P.days.length - 1];
 const MAX_DAY = LAST_DAY + Math.round(P.projection_years * 365.25);
+
+// The actual minimum daily close, computed once. Used as the y-axis floor so
+// the axis never has to render a sub-$1 tick (which "$,.3~s" would otherwise
+// render with an SI milli prefix, e.g. "$500m" meaning 50 cents).
+const DATA_MIN_CLOSE = P.close.reduce(function (a, b) { return Math.min(a, b); }, Infinity);
 
 const gd = document.getElementById("chart");
 
@@ -147,6 +152,13 @@ function qIndex(q) {
 function logspace(a, b, n) {
   const la = Math.log(a), lb = Math.log(b), out = new Array(n);
   for (let k = 0; k < n; k++) out[k] = Math.exp(la + (lb - la) * k / (n - 1));
+  return out;
+}
+
+function linspace(a, b, n) {
+  const out = new Array(n);
+  if (n === 1) { out[0] = a; return out; }
+  for (let k = 0; k < n; k++) out[k] = a + (b - a) * k / (n - 1);
   return out;
 }
 
@@ -219,7 +231,14 @@ function buildTraces() {
   });
 
   // Invisible dense grid so plotly_hover fires anywhere, projection included.
-  const hoverX = logspace(FIRST_DAY, MAX_DAY, 800);
+  // Linear in days (not log-spaced): a log grid is ~2 days apart near the
+  // genesis end but ~30 days apart near the +10y horizon, which snaps hover
+  // to the wrong date exactly where the projection matters most. Sized from
+  // the span so resolution stays comfortably under 3 days end to end.
+  const HOVER_TARGET_STEP_DAYS = 2.25;
+  const hoverSpan = MAX_DAY - FIRST_DAY;
+  const hoverN = Math.max(2, Math.ceil(hoverSpan / HOVER_TARGET_STEP_DAYS) + 1);
+  const hoverX = linspace(FIRST_DAY, MAX_DAY, hoverN);
   const medianRow = qIndex(0.5);
   traces.push({
     x: hoverX,
@@ -232,21 +251,87 @@ function buildTraces() {
   return traces;
 }
 
+// Minimum gap, in log10 data (price) units, between two adjacent right-edge
+// labels before they're considered a collision. At the right edge the band
+// can span well under half a log10-decade, so with 11 emphasis lines most
+// labels would otherwise overlap into an illegible stack.
+const ANNOTATION_MIN_GAP = 0.05;
+const MANDATORY_EMPHASIS = [0.01, 0.50, 0.99];
+
 function emphasisAnnotations(maxDay) {
-  return EMPHASIS.map(function (q) {
+  // EMPHASIS is ascending in q, and quantilePricesAt always returns a
+  // globally-sorted-ascending array, so the y values below are non-decreasing
+  // in the same order — no re-sorting needed before thinning.
+  const items = EMPHASIS.map(function (q) {
     const i = qIndex(q);
+    return { q: q, y: Math.log10(quantilePricesAt(maxDay)[i]) };
+  });
+
+  const kept = [];
+  for (let k = 0; k < items.length; k++) {
+    const item = items[k];
+    if (MANDATORY_EMPHASIS.indexOf(item.q) !== -1) {
+      kept.push(item);
+      continue;
+    }
+    const prevY = kept.length ? kept[kept.length - 1].y : -Infinity;
+    let nextMandatoryY = Infinity;
+    for (let j = k + 1; j < items.length; j++) {
+      if (MANDATORY_EMPHASIS.indexOf(items[j].q) !== -1) { nextMandatoryY = items[j].y; break; }
+    }
+    if (item.y - prevY >= ANNOTATION_MIN_GAP && nextMandatoryY - item.y >= ANNOTATION_MIN_GAP) {
+      kept.push(item);
+    }
+  }
+
+  return kept.map(function (item) {
     return {
-      x: Math.log10(maxDay), y: Math.log10(quantilePricesAt(maxDay)[i]),
-      xref: "x", yref: "y", text: "q" + q.toFixed(2),
+      x: Math.log10(maxDay), y: item.y,
+      xref: "x", yref: "y", text: "q" + item.q.toFixed(2),
       xanchor: "left", xshift: 4, showarrow: false,
       font: { size: 10, color: "rgba(255,255,255,.65)" },
     };
   });
 }
 
+// A vertical rule, a faint tint, and a label marking where fitted data ends
+// and the extrapolated projection begins. Degrades to nothing when the
+// visible range doesn't extend past LAST_DAY (the "Today" horizon), rather
+// than drawing a zero-width tint or a label clipped at the axis edge.
+function projectionExtras(d1) {
+  if (d1 <= LAST_DAY) return { shapes: [], annotations: [] };
+
+  const xLast = Math.log10(LAST_DAY);
+  const xRight = Math.log10(d1);
+
+  const shapes = [
+    {
+      type: "line", xref: "x", yref: "paper",
+      x0: xLast, x1: xLast, y0: 0, y1: 1,
+      line: { color: "rgba(245,179,1,.55)", width: 1, dash: "dot" },
+    },
+    {
+      type: "rect", xref: "x", yref: "paper",
+      x0: xLast, x1: xRight, y0: 0, y1: 1,
+      fillcolor: "rgba(255,255,255,.035)", line: { width: 0 },
+    },
+  ];
+
+  const annotations = [
+    {
+      x: xLast, y: 1, xref: "x", yref: "paper",
+      xanchor: "left", yanchor: "top", xshift: 4, yshift: -2,
+      text: "projection", showarrow: false,
+      font: { size: 10, color: "rgba(245,179,1,.8)" },
+    },
+  ];
+
+  return { shapes: shapes, annotations: annotations };
+}
+
 function axisRanges(years) {
   const d1 = years === 0 ? LAST_DAY : LAST_DAY + Math.round(years * 365.25);
-  const lo = quantilePricesAt(FIRST_DAY)[0] * 0.5;
+  const lo = Math.max(1, DATA_MIN_CLOSE * 0.85);
   const hi = quantilePricesAt(d1)[NQ - 1] * 1.6;
   return {
     x: [Math.log10(FIRST_DAY), Math.log10(d1)],
@@ -257,6 +342,7 @@ function axisRanges(years) {
 
 const ticks = yearTicks();
 const initial = axisRanges(5);
+const initialExtras = projectionExtras(initial.maxDay);
 
 const layout = {
   paper_bgcolor: "#0e1116", plot_bgcolor: "#0e1116",
@@ -264,7 +350,8 @@ const layout = {
   margin: { l: 60, r: 58, t: 12, b: 40 },
   hovermode: "x",
   showlegend: false,
-  annotations: emphasisAnnotations(initial.maxDay),
+  annotations: emphasisAnnotations(initial.maxDay).concat(initialExtras.annotations),
+  shapes: initialExtras.shapes,
   xaxis: {
     type: "log", range: initial.x,
     tickvals: ticks.vals, ticktext: ticks.text,
@@ -284,6 +371,21 @@ const config = { displayModeBar: false, responsive: true, scrollZoom: false };
 document.getElementById("meta").textContent =
   "Fitted " + NQ + " quantile regressions on daily closes through " + P.last_date +
   " · genesis " + P.genesis + " · built " + P.generated_at.slice(0, 10);
+
+if (!window.Plotly) {
+  // The charting library failed to load (e.g. no network on first load, or
+  // the CDN is unreachable). Without this the page silently renders a header,
+  // controls, and an empty panel with no indication anything is wrong. No
+  // fallback CDN is attempted — just say what happened.
+  const notice = document.createElement("div");
+  notice.style.cssText =
+    "padding:32px;max-width:520px;color:#c9d1d9;font:13px/1.6 ui-sans-serif,system-ui,sans-serif;";
+  notice.textContent =
+    "The charting library (Plotly) could not be loaded, so this chart can't be drawn. " +
+    "This page needs network access the first time it loads to fetch it from cdn.plot.ly. " +
+    "Check your connection and reload.";
+  gd.appendChild(notice);
+} else {
 
 window.__chartReady = Plotly.newPlot(gd, buildTraces(), layout, config);
 
@@ -311,9 +413,22 @@ function dayIndex(day) {
   return (day - P.days[hi] < P.days[lo] - day) ? hi : lo;
 }
 
+// Indices into the 99-element arrays, descending by price, anchored on round
+// quantiles with both extremes always included:
+//   step 10 -> 11 rows: q0.99, q0.90, q0.80, ... q0.10, q0.01
+//   step  5 -> 21 rows: q0.99, q0.95, q0.90, ... q0.10, q0.05, q0.01
+//   step  1 -> all 99 rows: q0.99 down to q0.01, no duplicated extremes
 function displayedRows() {
-  const rows = [];
-  for (let i = NQ - 1; i >= 0; i -= state.step) rows.push(i);
+  if (state.step <= 1) {
+    const rows = [];
+    for (let i = NQ - 1; i >= 0; i--) rows.push(i);
+    return rows;
+  }
+  const rows = [NQ - 1]; // q0.99
+  for (let m = 100 - state.step; m >= state.step; m -= state.step) {
+    rows.push(m - 1); // quantile m/100
+  }
+  rows.push(0); // q0.01
   return rows;
 }
 
@@ -391,10 +506,12 @@ function selectInGroup(group, button) {
 // relayout: no refit, no trace rebuild.
 function setHorizon(years) {
   const r = axisRanges(years);
+  const extras = projectionExtras(r.maxDay);
   return Plotly.relayout(gd, {
     "xaxis.range": r.x,
     "yaxis.range": r.y,
-    annotations: emphasisAnnotations(r.maxDay),
+    annotations: emphasisAnnotations(r.maxDay).concat(extras.annotations),
+    shapes: extras.shapes,
   });
 }
 window.__setHorizon = setHorizon;
@@ -415,6 +532,8 @@ densityGroup.addEventListener("click", function (ev) {
   state.step = Number(button.dataset.step);
   updatePanel(state.days === null ? LAST_DAY : state.days);
 });
+
+} // window.Plotly
 </script>
 </body>
 </html>
