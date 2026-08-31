@@ -238,7 +238,12 @@ projection region, the horizon control, and pinning.
 ## Success criteria
 
 1. `python build_chart.py` regenerates `docs/index.html` from current Kaggle data.
-2. Opening that file directly from disk shows the chart with no server and no network.
+2. Opening that file directly from disk shows the chart with no server and no build
+   step. The page does need network access on first load to fetch Plotly.js from
+   `https://cdn.plot.ly/plotly-2.35.2.min.js` — the only permitted network reference
+   anywhere in the output. (Originally pinned to `cdnjs.cloudflare.com`, but cdnjs
+   prunes non-current versions of plotly.js, so that pin eventually 404s; `cdn.plot.ly`
+   is Plotly's own CDN and serves pinned historical versions indefinitely.)
 3. Hovering any date shows per-quantile prices, and where the actual price sat.
 4. Hovering past the last price shows projected per-quantile prices.
 5. The quantile ordering in the panel is monotone at every date in range.

@@ -24,4 +24,6 @@ python build_chart.py
 ```
 
 Options: `--csv PATH` to skip the Kaggle download, `--out PATH` to write elsewhere.
-The output has no local dependencies; open it directly from disk.
+There's no server and no build step; open the output directly from disk. It does
+need network access on first load to fetch the Plotly.js charting library from its
+CDN.
