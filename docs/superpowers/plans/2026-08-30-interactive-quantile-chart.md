@@ -6,7 +6,7 @@
 
 **Architecture:** A Python build script (`build_chart.py`) downloads Kaggle minute data, aggregates to daily, fits 99 quantile regressions of `log_Close ~ log_days_since_genesis`, and bakes the resulting 99 intercept/slope pairs plus the daily price series into a JSON payload. That payload is substituted into `chart_template.html` at a marker, producing `docs/index.html`. Because each quantile is the closed form `exp(a_q + b_q·ln(days))`, the browser evaluates all 99 quantiles for any date exactly, in JavaScript, with no interpolation and no model.
 
-**Tech Stack:** Python 3.12, pandas, numpy, statsmodels (`QuantReg`), kagglehub, pytest. Browser side: Plotly.js 2.35.2 from cdnjs, vanilla JS, no build step.
+**Tech Stack:** Python 3.12, pandas, numpy, statsmodels (`QuantReg`), kagglehub, pytest. Browser side: Plotly.js 2.35.2 from `cdn.plot.ly`, vanilla JS, no build step.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-interactive-quantile-chart-design.md`
 
@@ -15,7 +15,7 @@
 - Genesis date is **2010-01-03** — matches notebook cell 14. One constant, `GENESIS_DATE`. Do not use 2009-01-03 or 2009-01-09.
 - Exactly **99 quantiles**: 0.01 through 0.99 in steps of 0.01, rounded to 2 decimal places.
 - Output is **`docs/index.html`**, committed to the repo, and must open correctly over `file://` with no local server.
-- The only permitted network reference in the output is the pinned Plotly CDN URL: `https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js`. Nothing else is fetched at runtime.
+- The only permitted network reference in the output is the pinned Plotly CDN URL: `https://cdn.plot.ly/plotly-2.35.2.min.js`. Nothing else is fetched at runtime. (Originally pinned to `cdnjs.cloudflare.com`, but cdnjs prunes non-current versions of plotly.js from its CDN, so a pin to 2.35.2 there eventually 404s — confirmed in production. `cdn.plot.ly` is Plotly's own CDN and serves pinned historical versions indefinitely.)
 - Template substitution marker is the literal string `/*__PAYLOAD__*/`.
 - Projection horizon used when building traces is always **10 years** past the last data point; the horizon control only changes the visible axis range.
 - Quantile rearrangement (sorting the 99 evaluated prices ascending) happens **in the browser at evaluation time**. Emitted coefficients are never modified.

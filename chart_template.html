@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitcoin Power-Law Quantiles</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --line: #2a313c;
+    --text: #c9d1d9;
+    --dim: #7d8590;
+    --accent: #f5b301;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+  .meta { color: var(--dim); font-size: 12px; }
+  .controls { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
+  .control { display: flex; align-items: center; gap: 6px; }
+  .control label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .seg button {
+    background: transparent; color: var(--dim); border: 0; padding: 4px 10px;
+    font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--line); color: var(--text); }
+  main { display: flex; align-items: stretch; height: calc(100vh - 56px); }
+  #chart { flex: 1 1 auto; min-width: 0; }
+  #panel {
+    flex: 0 0 300px; border-left: 1px solid var(--line); background: var(--panel);
+    padding: 14px 16px; overflow-y: auto;
+  }
+  #panel h2 { font-size: 13px; margin: 0 0 2px; font-weight: 600; }
+  #panel .sub { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+  #panel .actual {
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 12px;
+  }
+  #panel .actual .price { font-size: 18px; font-weight: 600; }
+  #panel .actual .q { color: var(--accent); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 2px 0; }
+  td.q { color: var(--dim); width: 52px; }
+  td.p { text-align: right; }
+  tr.bracket { background: rgba(245, 179, 1, .10); }
+  tr.bracket td.q { color: var(--accent); }
+  .hint { color: var(--dim); font-size: 11px; margin-top: 14px; }
+  @media (max-width: 860px) {
+    main { flex-direction: column; height: auto; }
+    #chart { height: 60vh; }
+    #panel { flex: 1 1 auto; border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Bitcoin Power-Law Quantiles</h1>
+    <div class="meta" id="meta"></div>
+  </div>
+  <div class="controls">
+    <div class="control">
+      <label id="horizon-label">Horizon</label>
+      <div class="seg" id="horizon" role="group" aria-labelledby="horizon-label">
+        <button data-years="0" aria-pressed="false">Today</button>
+        <button data-years="2" aria-pressed="false">+2y</button>
+        <button data-years="5" aria-pressed="true">+5y</button>
+        <button data-years="10" aria-pressed="false">+10y</button>
+      </div>
+    </div>
+    <div class="control">
+      <label id="density-label">Readout</label>
+      <div class="seg" id="density" role="group" aria-labelledby="density-label">
+        <button data-step="10" aria-pressed="false">11</button>
+        <button data-step="5" aria-pressed="true">21</button>
+        <button data-step="1" aria-pressed="false">All 99</button>
+      </div>
+    </div>
+  </div>
+</header>
+<main>
+  <div id="chart"></div>
+  <aside id="panel">
+    <h2 id="panel-date">Hover the chart</h2>
+    <div class="sub" id="panel-sub">Prices at every quantile for that date.</div>
+    <div class="actual" id="panel-actual" hidden></div>
+    <table><tbody id="panel-rows"></tbody></table>
+    <div class="hint">Click to pin the readout. Click again to release.</div>
+  </aside>
+</main>
+<script>
+const PAYLOAD = /*__PAYLOAD__*/;
+
+const P = PAYLOAD;
+const NQ = P.quantiles.length;
+const DAY_MS = 86400000;
+const GENESIS_MS = Date.parse(P.genesis + "T00:00:00Z");
+const EMPHASIS = [0.01, 0.05, 0.10, 0.25, 0.40, 0.50, 0.60, 0.75, 0.90, 0.95, 0.99];
+
+const FIRST_DAY = P.days[0];
+const LAST_DAY = P.days[P.days.length - 1];
+const MAX_DAY = LAST_DAY + Math.round(P.projection_years * 365.25);
+
+// The actual minimum daily close, computed once. Used as the y-axis floor so
+// the axis never has to render a sub-$1 tick (which "$,.3~s" would otherwise
+// render with an SI milli prefix, e.g. "$500m" meaning 50 cents).
+const DATA_MIN_CLOSE = P.close.reduce(function (a, b) { return Math.min(a, b); }, Infinity);
+
+const gd = document.getElementById("chart");
+
+function daysToDate(d) { return new Date(GENESIS_MS + d * DAY_MS); }
+function fmtDate(d) { return daysToDate(d).toISOString().slice(0, 10); }
+
+function fmtPrice(v) {
+  if (v >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+  if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "k";
+  if (v >= 1) return "$" + v.toFixed(2);
+  return "$" + v.toPrecision(3);
+}
+
+// The whole model: 99 closed-form lines, rearranged (sorted) at evaluation time
+// so a higher quantile can never report a lower price. See the spec's
+// "Quantile crossing" section.
+function quantilePricesAt(days) {
+  const ld = Math.log(days);
+  const out = new Array(NQ);
+  for (let i = 0; i < NQ; i++) out[i] = Math.exp(P.coef[i][0] + P.coef[i][1] * ld);
+  out.sort((a, b) => a - b);
+  return out;
+}
+window.__quantilePricesAt = quantilePricesAt;
+
+function qIndex(q) {
+  let best = 0, bestDiff = Infinity;
+  for (let i = 0; i < NQ; i++) {
+    const d = Math.abs(P.quantiles[i] - q);
+    if (d < bestDiff) { bestDiff = d; best = i; }
+  }
+  return best;
+}
+
+function logspace(a, b, n) {
+  const la = Math.log(a), lb = Math.log(b), out = new Array(n);
+  for (let k = 0; k < n; k++) out[k] = Math.exp(la + (lb - la) * k / (n - 1));
+  return out;
+}
+
+function linspace(a, b, n) {
+  const out = new Array(n);
+  if (n === 1) { out[0] = a; return out; }
+  for (let k = 0; k < n; k++) out[k] = a + (b - a) * k / (n - 1);
+  return out;
+}
+
+// Straight lines in log-log space need only their endpoints. When the fit has
+// crossings inside the range, sorting makes each band piecewise, so sample it.
+const BAND_X = P.crossings_in_range
+  ? logspace(FIRST_DAY, MAX_DAY, 200)
+  : [FIRST_DAY, MAX_DAY];
+
+const BAND_Y = (function () {
+  const series = Array.from({ length: NQ }, () => new Array(BAND_X.length));
+  BAND_X.forEach((d, k) => {
+    const prices = quantilePricesAt(d);
+    for (let i = 0; i < NQ; i++) series[i][k] = prices[i];
+  });
+  return series;
+})();
+
+function bandColor(t) {
+  return "hsla(" + Math.round(212 - 212 * t) + ", 72%, 54%, 0.5)";
+}
+
+function yearTicks() {
+  const vals = [], text = [];
+  const first = daysToDate(FIRST_DAY).getUTCFullYear();
+  const last = daysToDate(MAX_DAY).getUTCFullYear();
+  let lastKept = -Infinity;
+  for (let y = first; y <= last; y++) {
+    const d = (Date.UTC(y, 0, 1) - GENESIS_MS) / DAY_MS;
+    if (d <= FIRST_DAY || d > MAX_DAY) continue;
+    const l = Math.log10(d);
+    // Drop labels that would collide on a log axis.
+    if (l - lastKept < 0.045 && y !== last) continue;
+    lastKept = l;
+    vals.push(d);
+    text.push(String(y));
+  }
+  return { vals, text };
+}
+
+function buildTraces() {
+  const traces = [];
+
+  for (let i = 0; i < NQ; i++) {
+    traces.push({
+      x: BAND_X, y: BAND_Y[i], type: "scatter", mode: "lines",
+      line: { width: 0 }, hoverinfo: "skip", showlegend: false,
+      fill: i === 0 ? "none" : "tonexty",
+      fillcolor: bandColor(i / (NQ - 1)),
+    });
+  }
+
+  EMPHASIS.forEach(function (q) {
+    const i = qIndex(q);
+    traces.push({
+      x: BAND_X, y: BAND_Y[i], type: "scatter", mode: "lines",
+      line: {
+        width: q === 0.5 ? 1.8 : 1.1,
+        color: q === 0.5 ? "rgba(255,255,255,.92)" : "rgba(255,255,255,.55)",
+        dash: q === 0.5 ? "solid" : "dot",
+      },
+      hoverinfo: "skip", showlegend: false,
+    });
+  });
+
+  traces.push({
+    x: P.days, y: P.close, type: "scatter", mode: "lines",
+    line: { width: 1.1, color: "#0b0d11" },
+    hoverinfo: "skip", showlegend: false,
+  });
+
+  // Invisible dense grid so plotly_hover fires anywhere, projection included.
+  // Linear in days (not log-spaced): a log grid is ~2 days apart near the
+  // genesis end but ~30 days apart near the +10y horizon, which snaps hover
+  // to the wrong date exactly where the projection matters most. Sized from
+  // the span so resolution stays comfortably under 3 days end to end.
+  const HOVER_TARGET_STEP_DAYS = 2.25;
+  const hoverSpan = MAX_DAY - FIRST_DAY;
+  const hoverN = Math.max(2, Math.ceil(hoverSpan / HOVER_TARGET_STEP_DAYS) + 1);
+  const hoverX = linspace(FIRST_DAY, MAX_DAY, hoverN);
+  const medianRow = qIndex(0.5);
+  traces.push({
+    x: hoverX,
+    y: hoverX.map(function (d) { return quantilePricesAt(d)[medianRow]; }),
+    type: "scatter", mode: "markers",
+    marker: { opacity: 0, size: 1 },
+    hoverinfo: "none", showlegend: false, name: "hovercatch",
+  });
+
+  return traces;
+}
+
+// Minimum gap, in log10 data (price) units, between two adjacent right-edge
+// labels before they're considered a collision. At the right edge the band
+// can span well under half a log10-decade, so with 11 emphasis lines most
+// labels would otherwise overlap into an illegible stack.
+const ANNOTATION_MIN_GAP = 0.05;
+const MANDATORY_EMPHASIS = [0.01, 0.50, 0.99];
+
+function emphasisAnnotations(maxDay) {
+  // EMPHASIS is ascending in q, and quantilePricesAt always returns a
+  // globally-sorted-ascending array, so the y values below are non-decreasing
+  // in the same order — no re-sorting needed before thinning.
+  const items = EMPHASIS.map(function (q) {
+    const i = qIndex(q);
+    return { q: q, y: Math.log10(quantilePricesAt(maxDay)[i]) };
+  });
+
+  const kept = [];
+  for (let k = 0; k < items.length; k++) {
+    const item = items[k];
+    if (MANDATORY_EMPHASIS.indexOf(item.q) !== -1) {
+      kept.push(item);
+      continue;
+    }
+    const prevY = kept.length ? kept[kept.length - 1].y : -Infinity;
+    let nextMandatoryY = Infinity;
+    for (let j = k + 1; j < items.length; j++) {
+      if (MANDATORY_EMPHASIS.indexOf(items[j].q) !== -1) { nextMandatoryY = items[j].y; break; }
+    }
+    if (item.y - prevY >= ANNOTATION_MIN_GAP && nextMandatoryY - item.y >= ANNOTATION_MIN_GAP) {
+      kept.push(item);
+    }
+  }
+
+  return kept.map(function (item) {
+    return {
+      x: Math.log10(maxDay), y: item.y,
+      xref: "x", yref: "y", text: "q" + item.q.toFixed(2),
+      xanchor: "left", xshift: 4, showarrow: false,
+      font: { size: 10, color: "rgba(255,255,255,.65)" },
+    };
+  });
+}
+
+// A vertical rule, a faint tint, and a label marking where fitted data ends
+// and the extrapolated projection begins. Degrades to nothing when the
+// visible range doesn't extend past LAST_DAY (the "Today" horizon), rather
+// than drawing a zero-width tint or a label clipped at the axis edge.
+function projectionExtras(d1) {
+  if (d1 <= LAST_DAY) return { shapes: [], annotations: [] };
+
+  const xLast = Math.log10(LAST_DAY);
+  const xRight = Math.log10(d1);
+
+  const shapes = [
+    {
+      type: "line", xref: "x", yref: "paper",
+      x0: xLast, x1: xLast, y0: 0, y1: 1,
+      line: { color: "rgba(245,179,1,.55)", width: 1, dash: "dot" },
+    },
+    {
+      type: "rect", xref: "x", yref: "paper",
+      x0: xLast, x1: xRight, y0: 0, y1: 1,
+      fillcolor: "rgba(255,255,255,.035)", line: { width: 0 },
+    },
+  ];
+
+  const annotations = [
+    {
+      x: xLast, y: 1, xref: "x", yref: "paper",
+      xanchor: "left", yanchor: "top", xshift: 4, yshift: -2,
+      text: "projection", showarrow: false,
+      font: { size: 10, color: "rgba(245,179,1,.8)" },
+    },
+  ];
+
+  return { shapes: shapes, annotations: annotations };
+}
+
+function axisRanges(years) {
+  const d1 = years === 0 ? LAST_DAY : LAST_DAY + Math.round(years * 365.25);
+  const lo = Math.max(1, DATA_MIN_CLOSE * 0.85);
+  const hi = quantilePricesAt(d1)[NQ - 1] * 1.6;
+  return {
+    x: [Math.log10(FIRST_DAY), Math.log10(d1)],
+    y: [Math.log10(lo), Math.log10(hi)],
+    maxDay: d1,
+  };
+}
+
+const ticks = yearTicks();
+const initial = axisRanges(5);
+const initialExtras = projectionExtras(initial.maxDay);
+
+const layout = {
+  paper_bgcolor: "#0e1116", plot_bgcolor: "#0e1116",
+  font: { color: "#c9d1d9", family: "ui-sans-serif, system-ui, sans-serif", size: 11 },
+  margin: { l: 60, r: 58, t: 12, b: 40 },
+  hovermode: "x",
+  showlegend: false,
+  annotations: emphasisAnnotations(initial.maxDay).concat(initialExtras.annotations),
+  shapes: initialExtras.shapes,
+  xaxis: {
+    type: "log", range: initial.x,
+    tickvals: ticks.vals, ticktext: ticks.text,
+    gridcolor: "rgba(255,255,255,.06)", zeroline: false,
+    showspikes: true, spikemode: "across", spikethickness: 1,
+    spikecolor: "rgba(245,179,1,.8)", spikedash: "solid", spikesnap: "cursor",
+  },
+  yaxis: {
+    type: "log", range: initial.y,
+    tickformat: "$,.3~s",
+    gridcolor: "rgba(255,255,255,.06)", zeroline: false,
+  },
+};
+
+const config = { displayModeBar: false, responsive: true, scrollZoom: false };
+
+document.getElementById("meta").textContent =
+  "Fitted " + NQ + " quantile regressions on daily closes through " + P.last_date +
+  " · genesis " + P.genesis + " · built " + P.generated_at.slice(0, 10);
+
+if (!window.Plotly) {
+  // The charting library failed to load (e.g. no network on first load, or
+  // the CDN is unreachable). Without this the page silently renders a header,
+  // controls, and an empty panel with no indication anything is wrong. No
+  // fallback CDN is attempted — just say what happened.
+  const notice = document.createElement("div");
+  notice.style.cssText =
+    "padding:32px;max-width:520px;color:#c9d1d9;font:13px/1.6 ui-sans-serif,system-ui,sans-serif;";
+  notice.textContent =
+    "The charting library (Plotly) could not be loaded, so this chart can't be drawn. " +
+    "This page needs network access the first time it loads to fetch it from cdn.plot.ly. " +
+    "Check your connection and reload.";
+  gd.appendChild(notice);
+} else {
+
+window.__chartReady = Plotly.newPlot(gd, buildTraces(), layout, config);
+
+const panelDate = document.getElementById("panel-date");
+const panelSub = document.getElementById("panel-sub");
+const panelActual = document.getElementById("panel-actual");
+const panelRows = document.getElementById("panel-rows");
+
+const state = { days: null, pinned: false, step: 5 };
+window.__panelState = state;
+
+// P.days is ascending; return the nearest index for any day within [FIRST_DAY, LAST_DAY],
+// or -1 when day > LAST_DAY (i.e. we are in the projection).
+function dayIndex(day) {
+  if (day > LAST_DAY) return -1;
+  if (day <= FIRST_DAY) return 0;
+  let lo = 0, hi = P.days.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (P.days[mid] === day) return mid;
+    if (P.days[mid] < day) lo = mid + 1; else hi = mid - 1;
+  }
+  if (lo >= P.days.length) return P.days.length - 1;
+  if (hi < 0) return 0;
+  return (day - P.days[hi] < P.days[lo] - day) ? hi : lo;
+}
+
+// Indices into the 99-element arrays, descending by price, anchored on round
+// quantiles with both extremes always included:
+//   step 10 -> 11 rows: q0.99, q0.90, q0.80, ... q0.10, q0.01
+//   step  5 -> 21 rows: q0.99, q0.95, q0.90, ... q0.10, q0.05, q0.01
+//   step  1 -> all 99 rows: q0.99 down to q0.01, no duplicated extremes
+function displayedRows() {
+  if (state.step <= 1) {
+    const rows = [];
+    for (let i = NQ - 1; i >= 0; i--) rows.push(i);
+    return rows;
+  }
+  const rows = [NQ - 1]; // q0.99
+  for (let m = 100 - state.step; m >= state.step; m -= state.step) {
+    rows.push(m - 1); // quantile m/100
+  }
+  rows.push(0); // q0.01
+  return rows;
+}
+
+function updatePanel(rawDays) {
+  const day = Math.max(1, Math.round(rawDays));
+  state.days = day;
+
+  const prices = quantilePricesAt(day);
+  const idx = dayIndex(day);
+  const hasActual = idx !== -1;
+
+  panelDate.textContent = fmtDate(day);
+  panelSub.textContent = hasActual
+    ? "Day " + day + " since genesis"
+    : "Projected · day " + day + " since genesis";
+
+  if (hasActual) {
+    const close = P.close[idx];
+    panelActual.hidden = false;
+    panelActual.innerHTML =
+      '<div class="price">' + fmtPrice(close) + "</div>" +
+      '<div class="q">actual close · sits at q' + P.closest_q[idx].toFixed(2) + "</div>";
+  } else {
+    panelActual.hidden = true;
+  }
+
+  const actual = hasActual ? P.close[idx] : null;
+  const rows = displayedRows();
+
+  // Highlight the displayed pair that brackets the actual price.
+  let upperBracket = -1;
+  if (actual !== null) {
+    for (let k = 0; k < rows.length; k++) {
+      if (prices[rows[k]] >= actual) upperBracket = k;
+    }
+  }
+
+  panelRows.innerHTML = rows
+    .map(function (i, k) {
+      const bracket =
+        upperBracket !== -1 && (k === upperBracket || k === upperBracket + 1);
+      return (
+        '<tr class="' + (bracket ? "bracket" : "") + '">' +
+        '<td class="q">q' + P.quantiles[i].toFixed(2) + "</td>" +
+        '<td class="p">' + fmtPrice(prices[i]) + "</td>" +
+        "</tr>"
+      );
+    })
+    .join("");
+}
+window.__updatePanel = updatePanel;
+
+gd.on("plotly_hover", function (ev) {
+  if (state.pinned) return;
+  const pt = ev.points[ev.points.length - 1];
+  if (pt) updatePanel(pt.x);
+});
+
+gd.on("plotly_click", function (ev) {
+  state.pinned = !state.pinned;
+  panelSub.style.color = state.pinned ? "var(--accent)" : "";
+  const pt = ev.points[ev.points.length - 1];
+  if (state.pinned && pt) updatePanel(pt.x);
+});
+
+window.__chartReady.then(function () { updatePanel(LAST_DAY); });
+
+function selectInGroup(group, button) {
+  group.querySelectorAll("button").forEach(function (b) {
+    b.setAttribute("aria-pressed", String(b === button));
+  });
+}
+
+// The band is always built out to MAX_DAY, so changing horizon is a pure
+// relayout: no refit, no trace rebuild.
+function setHorizon(years) {
+  const r = axisRanges(years);
+  const extras = projectionExtras(r.maxDay);
+  return Plotly.relayout(gd, {
+    "xaxis.range": r.x,
+    "yaxis.range": r.y,
+    annotations: emphasisAnnotations(r.maxDay).concat(extras.annotations),
+    shapes: extras.shapes,
+  });
+}
+window.__setHorizon = setHorizon;
+
+const horizonGroup = document.getElementById("horizon");
+horizonGroup.addEventListener("click", function (ev) {
+  const button = ev.target.closest("button");
+  if (!button) return;
+  selectInGroup(horizonGroup, button);
+  setHorizon(Number(button.dataset.years));
+});
+
+const densityGroup = document.getElementById("density");
+densityGroup.addEventListener("click", function (ev) {
+  const button = ev.target.closest("button");
+  if (!button) return;
+  selectInGroup(densityGroup, button);
+  state.step = Number(button.dataset.step);
+  updatePanel(state.days === null ? LAST_DAY : state.days);
+});
+
+} // window.Plotly
+</script>
+</body>
+</html>
