@@ -183,22 +183,32 @@ from build_chart import closest_quantile
 
 def test_closest_quantile_picks_the_line_the_point_sits_on():
     # Three parallel lines, one unit apart, tagged 0.25 / 0.50 / 0.75.
+    #
+    # Four *distinct* days (not three, not repeated) against three quantiles:
+    # a square, symmetric distance matrix would make argmin(axis=0) and
+    # argmin(axis=1) return the same thing, so an axis bug in closest_quantile
+    # could pass this test undetected. Distinct row count and day values force
+    # the assertion to genuinely pin axis=1 (closest quantile per row/day).
     coef = np.array([[0.0, 1.0], [1.0, 1.0], [2.0, 1.0]])
     quantiles = np.array([0.25, 0.50, 0.75])
-    days = np.array([100.0, 100.0, 100.0])
+    days = np.array([50.0, 100.0, 200.0, 400.0])
     log_days = np.log(days)
 
     daily = pd.DataFrame(
         {
             "DaysSinceGenesis": days,
-            # exactly on the 0.25 line, the 0.50 line, and the 0.75 line
-            "log_Close": [log_days[0], 1.0 + log_days[1], 2.0 + log_days[2]],
+            "log_Close": [
+                log_days[0],         # day 50: exactly on the 0.25 line
+                1.0 + log_days[1],   # day 100: exactly on the 0.50 line
+                2.0 + log_days[2],   # day 200: exactly on the 0.75 line
+                log_days[3],         # day 400: exactly on the 0.25 line again
+            ],
         }
     )
 
     result = closest_quantile(daily, coef, quantiles)
 
-    assert result.tolist() == [0.25, 0.50, 0.75]
+    assert result.tolist() == [0.25, 0.50, 0.75, 0.25]
 
 
 def test_closest_quantile_returns_one_value_per_row():

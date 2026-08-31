@@ -92,3 +92,35 @@ def test_template_offers_four_horizons_and_three_densities():
         assert f'data-step="{step}"' in text
 
 
+def _extract_payload(html_text: str) -> dict:
+    """Pull the PAYLOAD object out of a rendered chart's inline <script>.
+
+    Uses a JSON decoder anchored right after the assignment rather than a
+    regex, since the payload can itself contain characters (e.g. ';') that
+    would make a naive regex boundary unreliable.
+    """
+    marker = "const PAYLOAD = "
+    start = html_text.index(marker) + len(marker)
+    payload, _end = json.JSONDecoder().raw_decode(html_text[start:])
+    return payload
+
+
+def test_docs_index_html_matches_a_fresh_render_of_the_template(tmp_path):
+    """docs/index.html is generated, and must stay in sync with the template.
+
+    Extracts the payload already embedded in the committed docs/index.html,
+    re-renders chart_template.html with that exact payload, and asserts the
+    result is byte-identical to what's committed. If someone edits the
+    template without regenerating docs/index.html, this fails.
+    """
+    committed_path = REPO_ROOT / "docs" / "index.html"
+    committed = committed_path.read_text(encoding="utf-8")
+    payload = _extract_payload(committed)
+
+    out = tmp_path / "index.html"
+    render(payload, TEMPLATE, out)
+    fresh = out.read_text(encoding="utf-8")
+
+    assert fresh == committed
+
+
